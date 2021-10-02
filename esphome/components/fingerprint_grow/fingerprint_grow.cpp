@@ -2,6 +2,7 @@
 #include "esphome/core/gpio.h"
 #include "esphome/core/log.h"
 #include <cinttypes>
+#include <algorithm>
 
 namespace esphome::fingerprint_grow {
 
@@ -54,6 +55,170 @@ void FingerprintGrowComponent::update() {
   }
   this->enrollment_scan_callback_.call(this->enrollment_image_, this->enrollment_slot_);
   ++this->enrollment_image_;
+}
+
+void FingerprintGrowComponent::load_template(uint16_t finger_id) {
+  this->data_ = {LOAD, 0x01, (uint8_t) (finger_id >> 8), (uint8_t) finger_id};
+  uint8_t result = this->send_command_();
+  if (result != OK) {
+    this->template_loaded_callback_.call(finger_id, "", result);
+    return;
+  }
+
+  this->data_ = {UPLOAD, 0x01};
+  result = this->send_command_();
+  if (result != OK) {
+    this->template_loaded_callback_.call(finger_id, "", result);
+    return;
+  }
+
+  std::string hex_template;
+  std::vector<uint8_t> payload;
+  static constexpr char HEX_DIGITS[] = "0123456789ABCDEF";
+  do {
+    result = this->read_data_packet_(payload);
+    if (result != DATA && result != END_DATA) {
+      this->template_loaded_callback_.call(finger_id, "", result);
+      return;
+    }
+    for (uint8_t byte : payload) {
+      hex_template.push_back(HEX_DIGITS[byte >> 4]);
+      hex_template.push_back(HEX_DIGITS[byte & 0x0F]);
+    }
+  } while (result == DATA);
+  this->template_loaded_callback_.call(finger_id, hex_template, OK);
+}
+
+void FingerprintGrowComponent::store_template(uint16_t finger_id, const std::string &hex_template) {
+  auto hex_digit = [](char c) -> int {
+    if (c >= '0' && c <= '9')
+      return c - '0';
+    if (c >= 'A' && c <= 'F')
+      return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f')
+      return c - 'a' + 10;
+    return -1;
+  };
+  if (hex_template.empty() || hex_template.size() % 2 != 0) {
+    ESP_LOGE(TAG, "Template must contain complete hex bytes");
+    this->template_stored_callback_.call(finger_id, BAD_PACKET);
+    return;
+  }
+  std::vector<uint8_t> bytes;
+  bytes.reserve(hex_template.size() / 2);
+  for (size_t i = 0; i < hex_template.size(); i += 2) {
+    const int high = hex_digit(hex_template[i]);
+    const int low = hex_digit(hex_template[i + 1]);
+    if (high < 0 || low < 0) {
+      ESP_LOGE(TAG, "Template contains a non-hex character");
+      this->template_stored_callback_.call(finger_id, BAD_PACKET);
+      return;
+    }
+    bytes.push_back((high << 4) | low);
+  }
+
+  this->data_ = {DOWNLOAD, 0x01};
+  uint8_t result = this->send_command_();
+  if (result != OK) {
+    this->template_stored_callback_.call(finger_id, result);
+    return;
+  }
+
+  for (size_t offset = 0; offset < bytes.size(); offset += 128) {
+    const size_t size = std::min<size_t>(128, bytes.size() - offset);
+    const uint8_t type = offset + size == bytes.size() ? END_DATA : DATA;
+    this->write_data_packet_(type, bytes.data() + offset, size);
+  }
+  this->data_ = {STORE, 0x01, (uint8_t) (finger_id >> 8), (uint8_t) finger_id};
+  result = this->send_command_();
+  this->template_stored_callback_.call(finger_id, result);
+  if (result == OK)
+    this->get_fingerprint_count_();
+}
+
+void FingerprintGrowComponent::set_sensor_baud_rate(uint32_t baud_rate) {
+  if (baud_rate != 9600 && baud_rate != 19200 && baud_rate != 38400 && baud_rate != 57600) {
+    ESP_LOGE(TAG, "Unsupported sensor baud rate: %" PRIu32, baud_rate);
+    return;
+  }
+  this->data_ = {SET_SYS_PARAM, 0x04, (uint8_t) (baud_rate / 9600)};
+  if (this->send_command_() == OK) {
+    ESP_LOGI(TAG, "Sensor baud rate set to %" PRIu32, baud_rate);
+    this->parent_->set_baud_rate(baud_rate);
+  } else {
+    ESP_LOGE(TAG, "Unable to set sensor baud rate");
+  }
+}
+
+uint8_t FingerprintGrowComponent::read_data_packet_(std::vector<uint8_t> &payload) {
+  payload.clear();
+  auto read_byte = [this](uint8_t &byte) -> bool {
+    const uint32_t start = millis();
+    while (millis() - start < 1000) {
+      if (this->available()) {
+        byte = this->read();
+        return true;
+      }
+      delay(1);
+    }
+    return false;
+  };
+  uint8_t byte;
+  uint16_t checksum = 0;
+  for (size_t i = 0; i < 6; ++i) {
+    if (!read_byte(byte))
+      return TIMEOUT;
+    const uint8_t expected = i == 0   ? (uint8_t) (START_CODE >> 8)
+                             : i == 1 ? (uint8_t) START_CODE
+                                      : this->address_[i - 2];
+    if (byte != expected)
+      return BAD_PACKET;
+  }
+  uint8_t type;
+  if (!read_byte(type))
+    return TIMEOUT;
+  if (type != DATA && type != END_DATA)
+    return BAD_PACKET;
+  checksum = type;
+  uint8_t high, low;
+  if (!read_byte(high) || !read_byte(low))
+    return TIMEOUT;
+  const uint16_t length = ((uint16_t) high << 8) | low;
+  if (length < 2 || length > 258)
+    return BAD_PACKET;
+  checksum += high + low;
+  payload.reserve(length - 2);
+  for (uint16_t i = 0; i < length - 2; ++i) {
+    if (!read_byte(byte))
+      return TIMEOUT;
+    payload.push_back(byte);
+    checksum += byte;
+  }
+  if (!read_byte(high) || !read_byte(low))
+    return TIMEOUT;
+  if (checksum != (((uint16_t) high << 8) | low))
+    return BAD_PACKET;
+  this->last_transfer_ms_ = millis();
+  return type;
+}
+
+void FingerprintGrowComponent::write_data_packet_(uint8_t type, const uint8_t *data, size_t size) {
+  const uint16_t length = size + 2;
+  this->write((uint8_t) (START_CODE >> 8));
+  this->write((uint8_t) START_CODE);
+  for (uint8_t byte : this->address_)
+    this->write(byte);
+  this->write(type);
+  this->write((uint8_t) (length >> 8));
+  this->write((uint8_t) length);
+  uint16_t checksum = type + (length >> 8) + (length & 0xFF);
+  for (size_t i = 0; i < size; ++i) {
+    this->write(data[i]);
+    checksum += data[i];
+  }
+  this->write((uint8_t) (checksum >> 8));
+  this->write((uint8_t) checksum);
+  this->last_transfer_ms_ = millis();
 }
 
 void FingerprintGrowComponent::setup() {

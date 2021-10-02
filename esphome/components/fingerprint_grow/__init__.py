@@ -23,6 +23,11 @@ from esphome.const import (
     CONF_STATE,
 )
 
+CONF_ON_TEMPLATE_LOADED = "on_template_loaded"
+CONF_ON_TEMPLATE_STORED = "on_template_stored"
+CONF_HEX_TEMPLATE = "hex_template"
+CONF_SENSOR_BAUD_RATE = "sensor_baud_rate"
+
 CODEOWNERS = ["@OnFreund", "@loongyh", "@alexborro"]
 DEPENDENCIES = ["uart"]
 AUTO_LOAD = ["binary_sensor", "sensor"]
@@ -88,6 +93,8 @@ CONFIG_SCHEMA = cv.All(
             cv.Optional(CONF_ON_ENROLLMENT_SCAN): automation.validate_automation({}),
             cv.Optional(CONF_ON_ENROLLMENT_DONE): automation.validate_automation({}),
             cv.Optional(CONF_ON_ENROLLMENT_FAILED): automation.validate_automation({}),
+            cv.Optional(CONF_ON_TEMPLATE_LOADED): automation.validate_automation({}),
+            cv.Optional(CONF_ON_TEMPLATE_STORED): automation.validate_automation({}),
         }
     )
     .extend(cv.polling_component_schema("500ms"))
@@ -125,6 +132,20 @@ _CALLBACK_AUTOMATIONS = (
         CONF_ON_ENROLLMENT_DONE,
         "add_on_enrollment_done_callback",
         [(cg.uint16, "finger_id")],
+    ),
+    automation.CallbackAutomation(
+        CONF_ON_TEMPLATE_LOADED,
+        "add_on_template_loaded_callback",
+        [
+            (cg.uint16, "finger_id"),
+            (cg.std_string, "hex_template"),
+            (cg.uint8, "error_code"),
+        ],
+    ),
+    automation.CallbackAutomation(
+        CONF_ON_TEMPLATE_STORED,
+        "add_on_template_stored_callback",
+        [(cg.uint16, "finger_id"), (cg.uint8, "error_code")],
     ),
     automation.CallbackAutomation(
         CONF_ON_ENROLLMENT_FAILED,
@@ -165,6 +186,45 @@ FINGERPRINT_GROW_ID_SCHEMA = cv.Schema(
     {
         cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
     }
+)
+
+automation.register_apply_action(
+    "fingerprint_grow.load_template",
+    cv.maybe_simple_value(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_FINGER_ID): cv.templatable(cv.uint16_t),
+        },
+        key=CONF_FINGER_ID,
+    ),
+    automation.ApplyField(CONF_FINGER_ID, "load_template", cg.uint16),
+)
+
+automation.register_apply_action(
+    "fingerprint_grow.store_template",
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_FINGER_ID): cv.templatable(cv.uint16_t),
+            cv.Required(CONF_HEX_TEMPLATE): cv.templatable(cv.string),
+        }
+    ),
+    automation.ApplyCall(
+        "store_template({}, {})",
+        ((CONF_FINGER_ID, cg.uint16), (CONF_HEX_TEMPLATE, cg.std_string)),
+    ),
+)
+
+automation.register_apply_action(
+    "fingerprint_grow.set_sensor_baud_rate",
+    cv.maybe_simple_value(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_SENSOR_BAUD_RATE): cv.templatable(cv.uint32_t),
+        },
+        key=CONF_SENSOR_BAUD_RATE,
+    ),
+    automation.ApplyField(CONF_SENSOR_BAUD_RATE, "set_sensor_baud_rate", cg.uint32),
 )
 
 automation.register_apply_action(

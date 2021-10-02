@@ -34,8 +34,10 @@ enum GrowCommand {
   STORE = 0x06,
   LOAD = 0x07,
   UPLOAD = 0x08,
+  DOWNLOAD = 0x09,
   DELETE = 0x0C,
   DELETE_ALL = 0x0D,  // aka EMPTY
+  SET_SYS_PARAM = 0x0E,
   READ_SYS_PARAM = 0x0F,
   SET_PASSWORD = 0x12,
   VERIFY_PASSWORD = 0x13,
@@ -147,9 +149,19 @@ class FingerprintGrowComponent final : public PollingComponent, public uart::UAR
     this->enrollment_done_callback_.add(std::forward<F>(callback));
   }
 
+  template<typename F> void add_on_template_loaded_callback(F &&callback) {
+    this->template_loaded_callback_.add(std::forward<F>(callback));
+  }
+  template<typename F> void add_on_template_stored_callback(F &&callback) {
+    this->template_stored_callback_.add(std::forward<F>(callback));
+  }
   template<typename F> void add_on_enrollment_failed_callback(F &&callback) {
     this->enrollment_failed_callback_.add(std::forward<F>(callback));
   }
+
+  void load_template(uint16_t finger_id);
+  void store_template(uint16_t finger_id, const std::string &hex_template);
+  void set_sensor_baud_rate(uint32_t baud_rate);
 
   void enroll_fingerprint(uint16_t finger_id, uint8_t num_buffers);
   void finish_enrollment(uint8_t result);
@@ -169,6 +181,8 @@ class FingerprintGrowComponent final : public PollingComponent, public uart::UAR
   void get_fingerprint_count_();
   uint8_t transfer_(std::vector<uint8_t> &data_buffer);
   uint8_t send_command_();
+  uint8_t read_data_packet_(std::vector<uint8_t> &payload);
+  void write_data_packet_(uint8_t type, const uint8_t *data, size_t size);
   void sensor_wakeup_();
   void sensor_sleep_();
 
@@ -205,6 +219,8 @@ class FingerprintGrowComponent final : public PollingComponent, public uart::UAR
   CallbackManager<void()> finger_scan_misplaced_callback_;
   CallbackManager<void(uint8_t, uint16_t)> enrollment_scan_callback_;
   CallbackManager<void(uint16_t)> enrollment_done_callback_;
+  CallbackManager<void(uint16_t, std::string, uint8_t)> template_loaded_callback_;
+  CallbackManager<void(uint16_t, uint8_t)> template_stored_callback_;
   CallbackManager<void(uint16_t)> enrollment_failed_callback_;
 };
 

@@ -8,6 +8,11 @@ esphome:
       - fingerprint_grow.delete:
           finger_id: 2
       - fingerprint_grow.delete_all:
+      - fingerprint_grow.load_template: 2
+      - fingerprint_grow.store_template:
+          finger_id: 2
+          hex_template: "AABB"
+      - fingerprint_grow.set_sensor_baud_rate: 57600
 
 fingerprint_grow:
   sensing_pin: ${sensing_pin}
@@ -29,6 +34,10 @@ fingerprint_grow:
     - logger.log: test_fingerprint_grow_node_enrollment_done
   on_enrollment_failed:
     - logger.log: test_fingerprint_grow_enrollment_failed
+  on_template_loaded:
+    - logger.log: test_fingerprint_grow_template_loaded
+  on_template_stored:
+    - logger.log: test_fingerprint_grow_template_stored
 
 binary_sensor:
   - platform: fingerprint_grow
