@@ -19,8 +19,14 @@ from esphome.const import (
     CONF_SENSING_PIN,
     CONF_SPEED,
     CONF_STATE,
-    CONF_TRIGGER_ID,
+    CONF_TRIGGER_ID
 )
+
+CONF_ON_TEMPLATE_LOADED = 'on_template_loaded'
+CONF_ON_TEMPLATE_STORED = 'on_template_stored'
+
+CONF_HEX_TEMPLATE = "hex_template"
+CONF_SENSOR_BAUD_RATE = "sensor_baud_rate"
 
 CODEOWNERS = ["@OnFreund", "@loongyh"]
 DEPENDENCIES = ["uart"]
@@ -50,9 +56,21 @@ EnrollmentDoneTrigger = fingerprint_grow_ns.class_(
     "EnrollmentDoneTrigger", automation.Trigger.template(cg.uint16)
 )
 
+TemplateLoadedTrigger = fingerprint_grow_ns.class_(
+    "TemplateLoadedTrigger", automation.Trigger.template(cg.uint16, cg.std_string, cg.uint8)
+)
+
+TemplateStoredTrigger = fingerprint_grow_ns.class_(
+    "TemplateStoredTrigger", automation.Trigger.template(cg.uint16, cg.uint8)
+)
+
 EnrollmentFailedTrigger = fingerprint_grow_ns.class_(
     "EnrollmentFailedTrigger", automation.Trigger.template(cg.uint16)
 )
+
+LoadTemplateAction = fingerprint_grow_ns.class_("LoadTemplateAction", automation.Action)
+StoreTemplateAction = fingerprint_grow_ns.class_("StoreTemplateAction", automation.Action)
+SetSensorBaudRateAction = fingerprint_grow_ns.class_("SetSensorBaudRateAction", automation.Action)
 
 EnrollmentAction = fingerprint_grow_ns.class_("EnrollmentAction", automation.Action)
 CancelEnrollmentAction = fingerprint_grow_ns.class_(
@@ -125,6 +143,20 @@ CONFIG_SCHEMA = (
                     ),
                 }
             ),
+            cv.Optional(CONF_ON_TEMPLATE_LOADED): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        TemplateLoadedTrigger
+                    ),
+                }
+            ),
+            cv.Optional(CONF_ON_TEMPLATE_STORED): automation.validate_automation(
+                {
+                    cv.GenerateID(CONF_TRIGGER_ID): cv.declare_id(
+                        TemplateStoredTrigger
+                    ),
+                }
+            ),
         }
     )
     .extend(cv.polling_component_schema("500ms"))
@@ -172,6 +204,75 @@ async def to_code(config):
         trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
         await automation.build_automation(trigger, [(cg.uint16, "finger_id")], conf)
 
+    for conf in config.get(CONF_ON_TEMPLATE_LOADED, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(cg.uint16, "finger_id"), (cg.std_string, 'hex_template'), (cg.uint8, 'error_code')], conf)
+
+    for conf in config.get(CONF_ON_TEMPLATE_STORED, []):
+        trigger = cg.new_Pvariable(conf[CONF_TRIGGER_ID], var)
+        await automation.build_automation(trigger, [(cg.uint16, "finger_id"), (cg.uint8, 'error_code')], conf)
+
+
+@automation.register_action(
+    "fingerprint_grow.load_template",
+    LoadTemplateAction,
+    cv.maybe_simple_value(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_FINGER_ID): cv.templatable(cv.uint16_t)
+        },
+        key=CONF_FINGER_ID,
+    )
+)
+async def fingerprint_grow_load_template(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+
+    template_ = await cg.templatable(config[CONF_FINGER_ID], args, cg.uint16)
+    cg.add(var.set_finger_id(template_))
+    return var
+
+@automation.register_action(
+    "fingerprint_grow.store_template",
+    StoreTemplateAction,
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_FINGER_ID): cv.templatable(cv.uint16_t),
+            cv.Required(CONF_HEX_TEMPLATE): cv.templatable(cv.string),
+        }
+    )
+)
+async def fingerprint_grow_store_template(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+
+    template_ = await cg.templatable(config[CONF_FINGER_ID], args, cg.uint16)
+    cg.add(var.set_finger_id(template_))
+
+    template_ = await cg.templatable(config[CONF_HEX_TEMPLATE], args, cg.std_string)
+    cg.add(var.set_hex_template(template_))
+
+    return var
+
+@automation.register_action(
+    "fingerprint_grow.set_sensor_baud_rate",
+    SetSensorBaudRateAction,
+    cv.Schema(
+        {
+            cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
+            cv.Required(CONF_SENSOR_BAUD_RATE): cv.templatable(cv.uint32_t),
+        }
+    )
+)
+async def fingerprint_grow_set_sensor_baud_rate(config, action_id, template_arg, args):
+    var = cg.new_Pvariable(action_id, template_arg)
+    await cg.register_parented(var, config[CONF_ID])
+
+    template_ = await cg.templatable(config[CONF_SENSOR_BAUD_RATE], args, cg.uint32)
+    cg.add(var.set_sensor_baud_rate(template_))
+
+    return var
 
 @automation.register_action(
     "fingerprint_grow.enroll",

@@ -26,8 +26,10 @@ enum GrowCommand {
   STORE = 0x06,
   LOAD = 0x07,
   UPLOAD = 0x08,
+  DOWNLOAD = 0x09,
   DELETE = 0x0C,
   EMPTY = 0x0D,
+  SET_SYS_PARAM = 0x0E,
   READ_SYS_PARAM = 0x0F,
   SET_PASSWORD = 0x12,
   VERIFY_PASSWORD = 0x13,
@@ -122,10 +124,21 @@ class FingerprintGrowComponent : public PollingComponent, public uart::UARTDevic
   void add_on_enrollment_done_callback(std::function<void(uint16_t)> callback) {
     this->enrollment_done_callback_.add(std::move(callback));
   }
+  void add_on_template_loaded_callback(std::function<void(uint16_t, std::string, uint8_t)> callback) {
+    this->template_loaded_callback_.add(std::move(callback));
+  }
+  void add_on_template_stored_callback(std::function<void(uint16_t, uint8_t)> callback) {
+    this->template_stored_callback_.add(std::move(callback));
+  }
 
   void add_on_enrollment_failed_callback(std::function<void(uint16_t)> callback) {
     this->enrollment_failed_callback_.add(std::move(callback));
   }
+
+  void load_template(uint16_t finger_id);
+  void store_template(uint16_t finger_id, std::string hex_template);
+
+  void set_sensor_baud_rate(uint32_t baud_rate);
 
   void enroll_fingerprint(uint16_t finger_id, uint8_t num_buffers);
   void finish_enrollment(uint8_t result);
@@ -144,6 +157,7 @@ class FingerprintGrowComponent : public PollingComponent, public uart::UARTDevic
   bool get_parameters_();
   void get_fingerprint_count_();
   uint8_t send_command_();
+  uint8_t read_packet_();
 
   std::vector<uint8_t> data_ = {};
   uint8_t address_[4] = {0xFF, 0xFF, 0xFF, 0xFF};
@@ -168,6 +182,8 @@ class FingerprintGrowComponent : public PollingComponent, public uart::UARTDevic
   CallbackManager<void()> finger_scan_unmatched_callback_;
   CallbackManager<void(uint8_t, uint16_t)> enrollment_scan_callback_;
   CallbackManager<void(uint16_t)> enrollment_done_callback_;
+  CallbackManager<void(uint16_t, std::string, uint8_t)> template_loaded_callback_;
+  CallbackManager<void(uint16_t, uint8_t)> template_stored_callback_;
   CallbackManager<void(uint16_t)> enrollment_failed_callback_;
 };
 
@@ -201,10 +217,58 @@ class EnrollmentDoneTrigger : public Trigger<uint16_t> {
   }
 };
 
+class TemplateLoadedTrigger : public Trigger<uint16_t, std::string, uint8_t> {
+ public:
+  explicit TemplateLoadedTrigger(FingerprintGrowComponent *parent) {
+    parent->add_on_template_loaded_callback([this](uint16_t finger_id, std::string hex_template, uint8_t error_code) { this->trigger(finger_id, hex_template, error_code); });
+  }
+};
+
+class TemplateStoredTrigger : public Trigger<uint16_t, uint8_t> {
+ public:
+  explicit TemplateStoredTrigger(FingerprintGrowComponent *parent) {
+    parent->add_on_template_stored_callback([this](uint16_t finger_id, uint8_t error_code) { this->trigger(finger_id, error_code); });
+  }
+};
+
 class EnrollmentFailedTrigger : public Trigger<uint16_t> {
  public:
   explicit EnrollmentFailedTrigger(FingerprintGrowComponent *parent) {
     parent->add_on_enrollment_failed_callback([this](uint16_t finger_id) { this->trigger(finger_id); });
+  }
+};
+
+template<typename... Ts> class LoadTemplateAction : public Action<Ts...>, public Parented<FingerprintGrowComponent> {
+ public:
+  TEMPLATABLE_VALUE(uint16_t, finger_id)
+
+  void play(Ts... x) override {
+    auto finger_id = this->finger_id_.value(x...);
+    this->parent_->load_template(finger_id);
+  }
+};
+
+template<typename... Ts> class StoreTemplateAction : public Action<Ts...>, public Parented<FingerprintGrowComponent> {
+ public:
+  TEMPLATABLE_VALUE(uint16_t, finger_id)
+  TEMPLATABLE_VALUE(std::string, hex_template)
+
+  void play(Ts... x) override {
+    auto finger_id = this->finger_id_.value(x...);
+    auto hex_template = this->hex_template_.value(x...);
+    
+    this->parent_->store_template(finger_id, hex_template);
+  }
+};
+
+template<typename... Ts> class SetSensorBaudRateAction : public Action<Ts...>, public Parented<FingerprintGrowComponent> {
+ public:
+  TEMPLATABLE_VALUE(uint32_t, sensor_baud_rate)
+
+  void play(Ts... x) override {
+    auto sensor_baud_rate = this->sensor_baud_rate_.value(x...);
+    
+    this->parent_->set_sensor_baud_rate(sensor_baud_rate);
   }
 };
 

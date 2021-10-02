@@ -48,6 +48,189 @@ void FingerprintGrowComponent::update() {
   ++this->enrollment_image_;
 }
 
+void FingerprintGrowComponent::load_template(uint16_t page_id) {
+  ESP_LOGI(TAG, "Loading hex_template in page #%d", page_id);
+
+  uint8_t buffer_id = 0x01;
+  this->data_ = {LOAD, buffer_id, (uint8_t)(page_id >> 8), (uint8_t)(page_id & 0xFF)};
+  uint8_t error_code = this->send_command_();
+  switch (error_code) {
+    case OK:
+      ESP_LOGI(TAG, "Template loaded from page #%d into buffer %.2X", page_id, buffer_id);
+      break;
+    case PACKET_RCV_ERR:
+      ESP_LOGI(TAG, "Communication error");
+      this->template_loaded_callback_.call(page_id, "", PACKET_RCV_ERR);
+      return;
+    default:
+      ESP_LOGI(TAG, "Unknown error.");
+      this->template_loaded_callback_.call(page_id, "", error_code);
+      return;
+  }
+
+  ESP_LOGI(TAG, "Attempting to read data from buffer %.2X", buffer_id);
+
+  this->data_ = {UPLOAD, buffer_id};
+  error_code = this->send_command_();
+  switch (error_code) {
+    case OK:
+      ESP_LOGI(TAG, "Data from the buffer is starting to transfer");
+      break;
+    default:
+      ESP_LOGI(TAG, "Unknown error.");
+      this->template_loaded_callback_.call(page_id, "", error_code);
+      return;
+  }
+
+  std::string hex_template = "";
+
+  uint8_t result = 0;
+
+  while(true) {
+    result = this->read_packet_();
+
+    std::string packet_hex_data = "";
+    for(int i=0; i<this->data_.size()-2; i++) {
+      auto d = this->data_[i];
+
+      char buffer[2];
+      sprintf(buffer, "%.2X", d);
+      packet_hex_data += buffer;
+    }
+    ESP_LOGD(TAG, "Received packet: %s with result %d", packet_hex_data.c_str(), result);
+    
+    hex_template += packet_hex_data;
+
+    if (result == DATA) continue;
+    break;
+  }
+
+  if (result == END_DATA) {
+    ESP_LOGI(TAG, "Data read from buffer: %d bytes", hex_template.length()/2);
+    this->template_loaded_callback_.call(page_id, hex_template, OK);
+  } else {
+    this->template_loaded_callback_.call(page_id, "", 0xFC);
+    ESP_LOGI(TAG, "Failed reading data from buffer.");
+  }
+
+  return;
+}
+
+void FingerprintGrowComponent::store_template(uint16_t page_id, std::string hex_template) {
+  ESP_LOGI(TAG, "Storing hex_template to page #%d: %s", page_id, hex_template.c_str());
+
+  std::vector<std::vector<uint8_t>> packets = {};
+  std::vector<uint8_t> current_packet = {};
+  
+  for (unsigned int i = 0; i < hex_template.length(); i += 2) {
+    std::string byteString = hex_template.substr(i, 2);
+    uint8_t byte = (uint8_t) strtol(byteString.c_str(), NULL, 16);
+    current_packet.push_back(byte);
+
+    if (current_packet.size() == 128) {
+        packets.push_back(current_packet);
+        current_packet = {};
+    }
+  }
+
+  uint8_t buffer_id = 0x01;
+  
+  ESP_LOGI(TAG, "Attempting to write data to buffer %.2X", buffer_id);
+
+  this->data_ = {DOWNLOAD, buffer_id};
+  uint8_t error_code = this->send_command_();
+  switch (error_code) {
+    case OK:
+      ESP_LOGI(TAG, "Data to the buffer is starting to transfer");
+      break;
+    default:
+      ESP_LOGI(TAG, "Unknown error.");
+      this->template_stored_callback_.call(page_id, error_code);
+      return;
+  }
+
+  for(int i = 0; i<packets.size(); i++) {
+    uint8_t packet_identifier = DATA;
+    if (i + 1 == packets.size()) {
+      packet_identifier = END_DATA;
+    }
+    ESP_LOGI(TAG, "Sending a data package with packet_identifier %.2X", packet_identifier);
+
+    for(uint8_t b: packets[i]) {
+      this->data_.push_back(b);
+    }
+
+    this->write((uint8_t)(START_CODE >> 8));
+    this->write((uint8_t)(START_CODE & 0xFF));
+    this->write(this->address_[0]);
+    this->write(this->address_[1]);
+    this->write(this->address_[2]);
+    this->write(this->address_[3]);
+    this->write(packet_identifier);
+
+    uint16_t wire_length = packets[i].size() + 2;
+    this->write((uint8_t)(wire_length >> 8));
+    this->write((uint8_t)(wire_length & 0xFF));
+
+    uint16_t sum = ((wire_length) >> 8) + ((wire_length) &0xFF) + packet_identifier;
+    for (auto data : packets[i]) {
+      this->write(data);
+      sum += data;
+    }
+
+    this->write((uint8_t)(sum >> 8));
+    this->write((uint8_t)(sum & 0xFF));
+
+    delay(100);
+  }
+
+  ESP_LOGI(TAG, "Data written to buffer: %d bytes", hex_template.length()/2);
+
+  ESP_LOGI(TAG, "Storing data in device buffer to page %d.", page_id);
+  this->data_ = {STORE, buffer_id, (uint8_t)(page_id >> 8), (uint8_t)(page_id & 0xFF)};
+  error_code = this->send_command_();
+  switch (error_code) {
+    case OK:
+      ESP_LOGI(TAG, "Template stored.");
+      this->template_stored_callback_.call(page_id, OK);
+      break;
+    case BAD_LOCATION:
+      ESP_LOGE(TAG, "Invalid slot");
+      this->template_stored_callback_.call(page_id, BAD_LOCATION);
+      break;
+    case FLASH_ERR:
+      ESP_LOGE(TAG, "Error writing to flash");
+      this->template_stored_callback_.call(page_id, FLASH_ERR);
+      break;
+    default:
+      ESP_LOGE(TAG, "Unknown error");
+      this->template_stored_callback_.call(page_id, error_code);
+      break;
+  }
+
+  this->get_fingerprint_count_();
+}
+
+void FingerprintGrowComponent::set_sensor_baud_rate(uint32_t sensor_baud_rate) {
+  uint8_t n = sensor_baud_rate / 9600;
+
+  if (n != 1 && n != 2 && n != 4 && n != 6) {
+    ESP_LOGE(TAG, "Invalid baud rate, must be N*9600, where N is in [1, 2, 4, 6]");
+    return;
+  }
+  ESP_LOGI(TAG, "Setting new baud rate: %d", sensor_baud_rate);
+
+  this->data_ = {SET_SYS_PARAM, 0x04, n};
+  if (this->send_command_() == OK) {
+    ESP_LOGI(TAG, "New baud rate successfully set.");
+    ESP_LOGI(TAG, "Update the baud rate in your configuration and reflash now.");
+
+    this->parent_->set_baud_rate(sensor_baud_rate);
+  } else {
+    ESP_LOGE(TAG, "Unable to set new baud rate.");
+  }
+}
+
 void FingerprintGrowComponent::setup() {
   ESP_LOGCONFIG(TAG, "Setting up Grow Fingerprint Reader...");
   if (this->check_password_()) {
@@ -417,6 +600,92 @@ uint8_t FingerprintGrowComponent::send_command_() {
   }
   ESP_LOGE(TAG, "No response received from reader");
   this->data_[0] = TIMEOUT;
+  return TIMEOUT;
+}
+
+uint8_t FingerprintGrowComponent::read_packet_() {
+  this->data_.clear();
+
+  uint8_t byte;
+  uint16_t idx = 0, length = 0;
+  uint8_t packet_type = BAD_PACKET;
+  uint16_t sum = 0;
+
+  for (uint16_t timer = 0; timer < 1000; timer++) {
+    if (this->available() == 0) {
+      delay(1);
+      continue;
+    }
+    byte = this->read();
+
+    switch (idx) {
+      case 0:
+        if (byte != (uint8_t)(START_CODE >> 8)) {
+          ESP_LOGD(TAG, "Skipping data to get to start code (0), want %.02X got %.02X", START_CODE >> 8, byte);
+          continue;
+        }
+        break;
+      case 1:
+        if (byte != (uint8_t)(START_CODE & 0xFF)) {
+          idx = 0;
+          sum = 0;
+          ESP_LOGD(TAG, "Skipping data to get to start code (1), want %.02X got %.02X", START_CODE & 0xFF, byte);
+          continue;
+        }
+        break;
+      case 2:
+      case 3:
+      case 4:
+      case 5:
+        if (byte != this->address_[idx - 2]) {
+          idx = 0;
+          sum = 0;
+          ESP_LOGD(TAG, "Skipping data to expected address");
+          continue;
+        }
+        break;
+      case 6:
+        // TODO: ACK (from command)/DATA on data
+        // if (byte != ACK) {
+        if (byte != DATA && byte != END_DATA) {
+          ESP_LOGD(TAG, "Expected DATA or END_DATA (0x02 or 0x08), got %d", byte);
+          idx = 0;
+          sum = 0;
+          continue;
+        }
+        packet_type = byte;
+        sum = packet_type;
+        ESP_LOGD(TAG, "Receiving packet_type %d", packet_type);
+        break;
+      case 7:
+        length = (uint16_t) byte << 8;
+        //sum += byte;
+        break;
+      case 8:
+        length |= byte;
+        //sum += byte;
+        sum += ((length) >> 8) + ((length) &0xFF);
+        ESP_LOGD(TAG, "Expecting a packet length of %d", length);
+        break;
+      default:
+
+        this->data_.push_back(byte);
+        if ((idx - 6) <= length) sum += byte;
+        if ((idx - 8) == length) {
+          ESP_LOGD(TAG, "Checksum calculated %.2X%.2X vs received %.2X%.2X", sum >> 8 , sum & 0xFF, this->data_[length-2], this->data_[length-1]);
+
+          if (((sum >> 8) != this->data_[length-2]) || ((sum & 0xFF) != this->data_[length-1])) {
+            ESP_LOGE(TAG, "Checksum error! Calculated %.2X%.2X vs received %.2X%.2X", sum >> 8 , sum & 0xFF, this->data_[length-2], this->data_[length-1]);
+            return BAD_PACKET;
+          }
+
+          return packet_type;
+        }
+        break;
+    }
+    idx++;
+  }
+  ESP_LOGE(TAG, "No response received from reader. Packet type: %d with current length %d", packet_type, idx);
   return TIMEOUT;
 }
 
