@@ -24,6 +24,8 @@ fingerprint_grow:
     - logger.log: test_fingerprint_grow_finger_scan_invalid
   on_finger_scan_matched:
     - logger.log: test_fingerprint_grow_finger_scan_matched
+    - fingerprint_grow.load_template:
+        finger_id: !lambda return finger_id;
   on_finger_scan_unmatched:
     - logger.log: test_fingerprint_grow_finger_scan_unmatched
   on_finger_scan_misplaced:
@@ -36,6 +38,9 @@ fingerprint_grow:
     - logger.log: test_fingerprint_grow_enrollment_failed
   on_template_loaded:
     - logger.log: test_fingerprint_grow_template_loaded
+    - fingerprint_grow.store_template:
+        finger_id: !lambda return finger_id;
+        hex_template: !lambda return hex_template;
   on_template_stored:
     - logger.log: test_fingerprint_grow_template_stored
 

@@ -260,11 +260,12 @@ async def fingerprint_grow_store_template(config, action_id, template_arg, args)
 @automation.register_action(
     "fingerprint_grow.set_sensor_baud_rate",
     SetSensorBaudRateAction,
-    cv.Schema(
+    cv.maybe_simple_value(
         {
             cv.GenerateID(): cv.use_id(FingerprintGrowComponent),
             cv.Required(CONF_SENSOR_BAUD_RATE): cv.templatable(cv.uint32_t),
-        }
+        },
+        key=CONF_SENSOR_BAUD_RATE,
     ),
     synchronous=True,
 )
