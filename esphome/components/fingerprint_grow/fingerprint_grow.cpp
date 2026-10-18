@@ -6,7 +6,7 @@
 
 namespace esphome::fingerprint_grow {
 
-ESPHOME_LOG_TAG(TAG, "fingerprint_grow");
+static const char *const TAG = "fingerprint_grow";
 
 // Based on Adafruit's library: https://github.com/adafruit/Adafruit-Fingerprint-Sensor-Library
 
